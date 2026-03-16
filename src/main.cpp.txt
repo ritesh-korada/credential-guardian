@@ -1,297 +1,365 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <EEPROM.h>
+#include <Keypad.h>
 
-#define BTN_DOT     2
-#define BTN_DASH    13
-#define BTN_CONFIRM 4
-#define BUZZER_PIN  27
+// ── Keypad Setup ──
+const byte ROWS = 4, COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+byte rowPins[ROWS] = {13, 12, 14, 27};
+byte colPins[COLS] = {26, 25, 33, 32};
+Keypad kpd = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
+// ── LCD ──
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// ── EEPROM Layout ──
 #define ADDR_BOOT    0
 #define ADDR_ULEN    1
-#define ADDR_UNAME   2
-#define ADDR_PLEN   17
-#define ADDR_PAT    18
-#define SLOT_START  24
-#define SLOT_SIZE   16
-#define MAX_SLOTS   10
-#define MAX_PAT      6
+#define ADDR_UNAME   2   // 15 bytes
+#define ADDR_PINLEN  17
+#define ADDR_PIN     18  // 8 bytes max
+#define SLOT_START   26
+#define SLOT_SIZE    16
+#define MAX_SLOTS    10
 
 const byte KEY = 0xAD;
-LiquidCrystal_I2C lcd(0x27, 16, 2);
-byte pat[MAX_PAT], patLen;
 char uname[16];
+char storedPIN[9];
+byte pinLen;
 
 // ── Helpers ──
-void beep(int f, int d) { tone(BUZZER_PIN, f, d); }
-
-void lcd2(const char* a, const char* b) {
+void beep(int f, int d) { tone(32, f, d); } // using pin 32 for buzzer? change if needed
+void sc(const char* a, const char* b) {
   lcd.clear();
-  lcd.setCursor(0, 0); lcd.print(a);
-  lcd.setCursor(0, 1); lcd.print(b);
+  lcd.setCursor(0,0); lcd.print(a);
+  lcd.setCursor(0,1); lcd.print(b);
 }
+int  sa(int s) { return SLOT_START + s * SLOT_SIZE; }
+bool sf(int s) { byte l=EEPROM.read(sa(s)); return l>0&&l<=15&&l!=255; }
+void xs(const char* p, int l, int a) { for(int i=0;i<l;i++) EEPROM.write(a+i, p[i]^KEY); }
+String xr(int a, int l) { String s=""; for(int i=0;i<l;i++) s+=(char)(EEPROM.read(a+i)^KEY); return s; }
 
-bool btnPress(int pin) {
-  if (digitalRead(pin) == LOW) {
-    delay(50);
-    if (digitalRead(pin) == LOW) {
-      while (digitalRead(pin) == LOW);
-      return true;
+// ── Get string input from keypad ──
+// # = confirm, B = backspace, * = cancel
+// Returns empty string if cancelled
+String getInput(const char* prompt, bool hide) {
+  String input = "";
+  lcd.clear();
+  lcd.setCursor(0,0); lcd.print(prompt);
+  lcd.setCursor(0,1);
+
+  while(true) {
+    char k = kpd.getKey();
+    if(!k) continue;
+
+    if(k == '#') {
+      // confirm
+      if(input.length() > 0) {
+        beep(1500, 100);
+        return input;
+      }
+    } else if(k == '*') {
+      // cancel
+      beep(300, 200);
+      return "";
+    } else if(k == 'B') {
+      // backspace
+      if(input.length() > 0) {
+        input.remove(input.length()-1);
+        lcd.setCursor(0,1);
+        lcd.print("                ");
+        lcd.setCursor(0,1);
+        if(hide) {
+          for(int i=0; i<input.length(); i++) lcd.print("*");
+        } else {
+          lcd.print(input);
+        }
+        beep(800, 50);
+      }
+    } else if(k == 'C') {
+      // clear all
+      input = "";
+      lcd.setCursor(0,1);
+      lcd.print("                ");
+      lcd.setCursor(0,1);
+      beep(500, 100);
+    } else if(k != 'A' && k != 'D') {
+      // normal character
+      if(input.length() < 15) {
+        input += k;
+        lcd.setCursor(0,1);
+        if(hide) {
+          lcd.print("                ");
+          lcd.setCursor(0,1);
+          for(int i=0; i<input.length(); i++) lcd.print("*");
+        } else {
+          lcd.print("                ");
+          lcd.setCursor(0,1);
+          lcd.print(input);
+        }
+        beep(1200, 50);
+      }
     }
   }
-  return false;
 }
 
-void showPat(byte* p, byte len) {
-  lcd.setCursor(0, 1);
-  lcd.print("                ");
-  lcd.setCursor(0, 1);
-  for (int i = 0; i < len; i++)
-    lcd.print(p[i] == 0 ? "." : "-");
-}
-
-int  slotAddr(int s)  { return SLOT_START + s * SLOT_SIZE; }
-
-bool slotFilled(int s) {
-  int l = EEPROM.read(slotAddr(s));
-  return (l > 0 && l <= 15 && l != 255);
-}
-
-void xorStore(const char* p, int len, int addr) {
-  for (int i = 0; i < len; i++)
-    EEPROM.write(addr + i, p[i] ^ KEY);
-}
-
-String xorRead(int addr, int len) {
-  String s = "";
-  for (int i = 0; i < len; i++)
-    s += (char)(EEPROM.read(addr + i) ^ KEY);
-  return s;
-}
-
-String waitSerial() {
-  while (!Serial.available());
-  String s = Serial.readStringUntil('\n');
-  s.trim();
-  return s;
-}
-
-// ── Pattern Entry ──
-bool enterPattern(byte* out, byte& outLen, bool saving) {
-  outLen = 0;
-  lcd2("Enter Pattern:", "BTN3=confirm");
-  unsigned long t = millis();
-  while (true) {
-    if (!saving && millis() - t > 15000) {
-      lcd2("Timeout!", "Try again");
-      beep(300, 500); delay(1500);
-      return false;
-    }
-    if (btnPress(BTN_DOT)     && outLen < MAX_PAT) { out[outLen++] = 0; beep(1200, 80);  showPat(out, outLen); }
-    if (btnPress(BTN_DASH)    && outLen < MAX_PAT) { out[outLen++] = 1; beep(800, 150);  showPat(out, outLen); }
-    if (btnPress(BTN_CONFIRM) && outLen > 0) return true;
-  }
-}
-
-// ── Auth ──
+// ── PIN Authentication ──
 bool auth() {
-  byte entered[MAX_PAT]; byte eLen;
-  if (!enterPattern(entered, eLen, false)) return false;
-  if (eLen == patLen) {
-    bool ok = true;
-    for (int i = 0; i < eLen; i++)
-      if (entered[i] != pat[i]) { ok = false; break; }
-    if (ok) {
-      lcd2("Access Granted!", "");
-      beep(2000, 400); delay(1500);
-      return true;
-    }
+  String entered = getInput("Enter PIN:", true);
+  if(entered == "") return false;
+
+  // compare with stored PIN
+  String stored = xr(ADDR_PIN, pinLen);
+  if(entered == stored) {
+    sc("Access Granted!", "");
+    beep(2000, 400);
+    delay(1500);
+    return true;
   }
-  lcd2("Wrong Pattern!", "Access Denied!");
-  beep(200, 800); delay(2000);
+  sc("Wrong PIN!", "Access Denied!");
+  beep(200, 800);
+  delay(2000);
   return false;
 }
 
 // ── First Boot ──
 void firstBoot() {
-  lcd2("Welcome! Vault", "First Time Setup");
+  sc("Welcome! Vault", "First Time Setup");
   delay(2000);
 
-  lcd2("Set Username:", "Type in Serial");
-  Serial.println("Enter username (max 15 chars):");
-  while (true) {
-    String n = waitSerial();
-    if (n.length() > 0 && n.length() <= 15) {
+  // Set username
+  while(true) {
+    String n = getInput("Set Username:", false);
+    if(n.length() > 0) {
       EEPROM.write(ADDR_ULEN, n.length());
-      xorStore(n.c_str(), n.length(), ADDR_UNAME);
+      xs(n.c_str(), n.length(), ADDR_UNAME);
       strncpy(uname, n.c_str(), 15);
-      lcd.clear(); lcd.print("Hi " + n + "!");
-      lcd.setCursor(0, 1); lcd.print("Saved!");
-      beep(1000, 200); delay(1500); break;
+      lcd.clear();
+      lcd.print("Hi " + n + "!");
+      lcd.setCursor(0,1);
+      lcd.print("Username saved!");
+      beep(1000, 200);
+      delay(1500);
+      break;
     }
-    Serial.println("Invalid. Max 15 chars.");
+    sc("Cannot be empty!", "Try again");
+    delay(1500);
   }
 
-  lcd2("Set Pattern:", "DOT. DASH- CFM");
-  Serial.println("BTN1=DOT BTN2=DASH BTN3=CONFIRM");
+  // Set PIN
+  sc("Set your PIN:", "4-8 digits + #");
   delay(1500);
-  enterPattern(pat, patLen, true);
-  EEPROM.write(ADDR_PLEN, patLen);
-  xorStore((char*)pat, patLen, ADDR_PAT);
-  lcd2("Pattern Saved!", "Vault Ready!");
-  beep(2000, 500); delay(2000);
+  while(true) {
+    String p = getInput("New PIN:", true);
+    if(p.length() >= 4) {
+      // confirm PIN
+      String p2 = getInput("Confirm PIN:", true);
+      if(p == p2) {
+        pinLen = p.length();
+        EEPROM.write(ADDR_PINLEN, pinLen);
+        xs(p.c_str(), pinLen, ADDR_PIN);
+        strncpy(storedPIN, p.c_str(), 8);
+        sc("PIN Set!", "Vault Ready!");
+        beep(2000, 500);
+        delay(2000);
+        break;
+      } else {
+        sc("PINs don't match", "Try again!");
+        beep(300, 400);
+        delay(1500);
+      }
+    } else {
+      sc("Min 4 digits!", "Try again");
+      beep(300, 300);
+      delay(1500);
+    }
+  }
+
   EEPROM.write(ADDR_BOOT, 1);
   EEPROM.commit();
 }
 
-// ── Load ──
+// ── Load from EEPROM ──
 void loadAll() {
   int ul = EEPROM.read(ADDR_ULEN);
-  if (ul > 0 && ul <= 15 && ul != 255) {
-    String u = xorRead(ADDR_UNAME, ul);
+  if(ul > 0 && ul <= 15 && ul != 255) {
+    String u = xr(ADDR_UNAME, ul);
     strncpy(uname, u.c_str(), 15);
   } else strcpy(uname, "User");
 
-  patLen = EEPROM.read(ADDR_PLEN);
-  if (patLen > MAX_PAT || patLen == 255) patLen = 0;
-  for (int i = 0; i < patLen; i++)
-    pat[i] = EEPROM.read(ADDR_PAT + i) ^ KEY;
+  pinLen = EEPROM.read(ADDR_PINLEN);
+  if(pinLen > 8 || pinLen == 255) pinLen = 0;
 }
 
-// ── View ──
+// ── View Flow ──
 void viewFlow() {
-  if (!auth()) return;
-  bool any = false;
-  Serial.println("\n=== Slots ===");
-  for (int i = 0; i < MAX_SLOTS; i++) {
-    bool f = slotFilled(i);
-    Serial.println("Slot " + String(i) + (f ? ": FILLED" : ": EMPTY"));
-    if (f) any = true;
-  }
-  if (!any) { lcd2("No passwords", "stored yet!"); delay(2000); return; }
+  if(!auth()) return;
 
-  lcd2("SLOT:<0-9>", "in Serial");
-  Serial.println("Type SLOT:<num> or BACK:");
-  while (true) {
-    String in = waitSerial();
-    if (in == "BACK") return;
-    if (in.startsWith("SLOT:")) {
-      int s = in.substring(5).toInt();
-      if (s >= 0 && s < MAX_SLOTS && slotFilled(s)) {
-        int a = slotAddr(s);
-        int l = EEPROM.read(a);
-        String d = xorRead(a + 1, l);
-        lcd.clear(); lcd.print("Slot " + String(s) + ":");
-        lcd.setCursor(0, 1); lcd.print(d);
-        Serial.println("Slot " + String(s) + ": " + d);
-        beep(2000, 200); delay(5000);
-        lcd2("Vault: LOCKED", ""); delay(1000);
-        return;
-      } else Serial.println("Empty or invalid.");
-    }
+  // show slot status
+  bool any = false;
+  String filledSlots = "";
+  for(int i=0; i<MAX_SLOTS; i++) {
+    if(sf(i)) { filledSlots += String(i) + " "; any = true; }
+  }
+
+  if(!any) {
+    sc("No passwords", "stored yet!");
+    beep(300, 300);
+    delay(2000);
+    return;
+  }
+
+  lcd.clear();
+  lcd.setCursor(0,0); lcd.print("Filled slots:");
+  lcd.setCursor(0,1); lcd.print(filledSlots);
+  delay(2000);
+
+  // ask which slot
+  String s = getInput("Slot number:", false);
+  if(s == "") return;
+  int slot = s.toInt();
+
+  if(slot >= 0 && slot < MAX_SLOTS && sf(slot)) {
+    int a = sa(slot);
+    int l = EEPROM.read(a);
+    String d = xr(a+1, l);
+
+    lcd.clear();
+    lcd.setCursor(0,0); lcd.print("Slot " + String(slot) + ":");
+    lcd.setCursor(0,1); lcd.print(d);
+    beep(2000, 200);
+    delay(5000);
+    sc("Vault: LOCKED", "");
+    delay(1000);
+  } else {
+    sc("Empty/Invalid", "slot!");
+    beep(300, 300);
+    delay(2000);
   }
 }
 
-// ── Insert ──
+// ── Insert Flow ──
 void insertFlow() {
   int free = 0, first = -1;
-  for (int i = 0; i < MAX_SLOTS; i++)
-    if (!slotFilled(i)) { free++; if (first < 0) first = i; }
+  for(int i=0; i<MAX_SLOTS; i++)
+    if(!sf(i)) { free++; if(first<0) first=i; }
 
-  if (free == 0) {
-    lcd2("No Slots Left!", "Delete one first");
-    beep(300, 500); delay(3000); return;
+  if(free == 0) {
+    sc("No Slots Left!", "Delete one first");
+    beep(300, 500);
+    delay(3000);
+    return;
   }
 
-  lcd.clear(); lcd.print("Free: ");
-  lcd.print(free); lcd.print("/10");
-  lcd.setCursor(0, 1); lcd.print("SAVE:<pass>");
-  Serial.println("Free: " + String(free) + " slots");
-  Serial.println("SAVE:<pass> or SLOT:<num> then SAVE:<pass>");
+  lcd.clear();
+  lcd.setCursor(0,0); lcd.print("Free: " + String(free) + "/10");
+  lcd.setCursor(0,1); lcd.print("Next free: " + String(first));
+  delay(2000);
 
-  int target = first;
-  while (true) {
-    String in = waitSerial();
-    if (in == "BACK") return;
-    if (in.startsWith("SLOT:")) {
-      int s = in.substring(5).toInt();
-      if (s >= 0 && s < MAX_SLOTS && !slotFilled(s)) {
-        target = s;
-        Serial.println("Target: slot " + String(s));
-      } else Serial.println("Invalid or filled.");
-    } else if (in.startsWith("SAVE:")) {
-      String p = in.substring(5);
-      if (p.length() > 0 && p.length() <= 15) {
-        int a = slotAddr(target);
-        EEPROM.write(a, p.length());
-        xorStore(p.c_str(), p.length(), a + 1);
-        EEPROM.commit();
-        lcd.clear(); lcd.print("Slot " + String(target));
-        lcd.setCursor(0, 1); lcd.print(String(free - 1) + " slots left");
-        beep(1500, 300); delay(2000); return;
-      } else Serial.println("Invalid. Max 15 chars.");
-    }
+  // ask slot number
+  String s = getInput("Save to slot:", false);
+  if(s == "") return;
+  int slot = s.toInt();
+
+  if(slot < 0 || slot >= MAX_SLOTS || sf(slot)) {
+    sc("Invalid/Filled!", "Use free slot");
+    beep(300, 300);
+    delay(2000);
+    return;
   }
+
+  // get password
+  String pass = getInput("Enter Password:", false);
+  if(pass == "") return;
+
+  // save
+  int a = sa(slot);
+  EEPROM.write(a, pass.length());
+  xs(pass.c_str(), pass.length(), a+1);
+  EEPROM.commit();
+
+  lcd.clear();
+  lcd.print("Slot " + String(slot));
+  lcd.setCursor(0,1);
+  lcd.print("Secured! " + String(free-1) + " left");
+  beep(1500, 300);
+  delay(2000);
 }
 
-// ── Delete ──
+// ── Delete Flow ──
 void deleteFlow() {
-  if (!auth()) return;
-  bool any = false;
-  for (int i = 0; i < MAX_SLOTS; i++)
-    if (slotFilled(i)) { Serial.println("Slot " + String(i) + ": FILLED"); any = true; }
-  if (!any) { lcd2("Nothing to", "delete!"); delay(2000); return; }
+  if(!auth()) return;
 
-  lcd2("DEL:<slot>", "in Serial");
-  Serial.println("Type DEL:<num> or BACK:");
-  while (true) {
-    String in = waitSerial();
-    if (in == "BACK") return;
-    if (in.startsWith("DEL:")) {
-      int s = in.substring(4).toInt();
-      if (s >= 0 && s < MAX_SLOTS && slotFilled(s)) {
-        int a = slotAddr(s);
-        for (int i = 0; i < SLOT_SIZE; i++) EEPROM.write(a + i, 0);
-        EEPROM.commit();
-        lcd.clear(); lcd.print("Slot " + String(s));
-        lcd.setCursor(0, 1); lcd.print("Deleted!");
-        beep(400, 400); delay(2000); return;
-      } else Serial.println("Invalid or empty slot.");
-    }
+  bool any = false;
+  String filledSlots = "";
+  for(int i=0; i<MAX_SLOTS; i++)
+    if(sf(i)) { filledSlots += String(i) + " "; any = true; }
+
+  if(!any) {
+    sc("Nothing to", "delete!");
+    delay(2000);
+    return;
+  }
+
+  lcd.clear();
+  lcd.setCursor(0,0); lcd.print("Filled slots:");
+  lcd.setCursor(0,1); lcd.print(filledSlots);
+  delay(2000);
+
+  String s = getInput("Delete slot:", false);
+  if(s == "") return;
+  int slot = s.toInt();
+
+  if(slot >= 0 && slot < MAX_SLOTS && sf(slot)) {
+    int a = sa(slot);
+    for(int i=0; i<SLOT_SIZE; i++) EEPROM.write(a+i, 0);
+    EEPROM.commit();
+    lcd.clear();
+    lcd.print("Slot " + String(slot));
+    lcd.setCursor(0,1);
+    lcd.print("Deleted!");
+    beep(400, 400);
+    delay(2000);
+  } else {
+    sc("Invalid/Empty", "slot!");
+    beep(300, 300);
+    delay(2000);
   }
 }
 
 // ─────────────────────────────────────────
 void setup() {
-  pinMode(BTN_DOT,     INPUT_PULLUP);
-  pinMode(BTN_DASH,    INPUT_PULLUP);
-  pinMode(BTN_CONFIRM, INPUT_PULLUP);
-  pinMode(BUZZER_PIN,  OUTPUT);
-
   Serial.begin(115200);
   Wire.begin(21, 22);
   lcd.init();
   lcd.backlight();
   EEPROM.begin(512);
 
-  if (EEPROM.read(ADDR_BOOT) != 1) firstBoot();
+  if(EEPROM.read(ADDR_BOOT) != 1) firstBoot();
   else loadAll();
 
   lcd.clear();
   lcd.print("Hello ");
   lcd.print(uname);
-  lcd.setCursor(0, 1);
+  lcd.setCursor(0,1);
   lcd.print("Vault Ready!");
   beep(1500, 300);
   delay(2000);
 }
 
 void loop() {
-  lcd2("1.View 2.Insert", "3.Delete");
-  Serial.println("\nBTN1=View BTN2=Insert BTN3=Delete");
-  while (true) {
-    if (btnPress(BTN_DOT))     { viewFlow();   return; }
-    if (btnPress(BTN_DASH))    { insertFlow(); return; }
-    if (btnPress(BTN_CONFIRM)) { deleteFlow(); return; }
+  sc("1.View 2.Insert", "3.Delete");
+
+  while(true) {
+    char k = kpd.getKey();
+    if(k == '1') { viewFlow();   return; }
+    if(k == '2') { insertFlow(); return; }
+    if(k == '3') { deleteFlow(); return; }
   }
 }
