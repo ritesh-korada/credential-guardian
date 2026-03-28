@@ -21,108 +21,187 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 // ── EEPROM Layout ──
 #define ADDR_BOOT    0
 #define ADDR_ULEN    1
-#define ADDR_UNAME   2   // 15 bytes
+#define ADDR_UNAME   2
 #define ADDR_PINLEN  17
-#define ADDR_PIN     18  // 8 bytes max
+#define ADDR_PIN     18
 #define SLOT_START   26
 #define SLOT_SIZE    16
 #define MAX_SLOTS    10
 
 const byte KEY = 0xAD;
+
 char uname[16];
-char storedPIN[9];
 byte pinLen;
 
-// ── Helpers ──
-void beep(int f, int d) { tone(32, f, d); } // using pin 32 for buzzer? change if needed
+// ── Buzzer ──
+#define BUZZER 15
+void beep(int f, int d) { tone(BUZZER, f, d); }
+
+// ── LCD Helper ──
 void sc(const char* a, const char* b) {
   lcd.clear();
   lcd.setCursor(0,0); lcd.print(a);
   lcd.setCursor(0,1); lcd.print(b);
 }
-int  sa(int s) { return SLOT_START + s * SLOT_SIZE; }
-bool sf(int s) { byte l=EEPROM.read(sa(s)); return l>0&&l<=15&&l!=255; }
-void xs(const char* p, int l, int a) { for(int i=0;i<l;i++) EEPROM.write(a+i, p[i]^KEY); }
-String xr(int a, int l) { String s=""; for(int i=0;i<l;i++) s+=(char)(EEPROM.read(a+i)^KEY); return s; }
 
-// ── Get string input from keypad ──
-// # = confirm, B = backspace, * = cancel
-// Returns empty string if cancelled
+// ── EEPROM Helpers ──
+int sa(int s) { return SLOT_START + s * SLOT_SIZE; }
+
+bool sf(int s) {
+  byte l = EEPROM.read(sa(s));
+  return l > 0 && l <= 15 && l != 255;
+}
+
+void xs(const char* p, int l, int a) {
+  for(int i=0;i<l;i++) EEPROM.write(a+i, p[i]^KEY);
+}
+
+String xr(int a, int l) {
+  String s="";
+  for(int i=0;i<l;i++) s+=(char)(EEPROM.read(a+i)^KEY);
+  return s;
+}
+
+// ── Multi-Tap Input ──
+bool isNumberMode = false;  // 🔢 global
+
 String getInput(const char* prompt, bool hide) {
   String input = "";
   lcd.clear();
   lcd.setCursor(0,0); lcd.print(prompt);
   lcd.setCursor(0,1);
 
-  while(true) {
-    char k = kpd.getKey();
-    if(!k) continue;
+  unsigned long lastPressTime = 0;
+  char lastKey = 0;
+  int tapIndex = 0;
 
-    if(k == '#') {
-      // confirm
-      if(input.length() > 0) {
-        beep(1500, 100);
-        return input;
-      }
-    } else if(k == '*') {
-      // cancel
-      beep(300, 200);
-      return "";
-    } else if(k == 'B') {
-      // backspace
-      if(input.length() > 0) {
-        input.remove(input.length()-1);
-        lcd.setCursor(0,1);
-        lcd.print("                ");
-        lcd.setCursor(0,1);
-        if(hide) {
-          for(int i=0; i<input.length(); i++) lcd.print("*");
-        } else {
-          lcd.print(input);
-        }
-        beep(800, 50);
-      }
-    } else if(k == 'C') {
-      // clear all
-      input = "";
+  bool isUpper = false;
+
+  // show default mode
+  lcd.setCursor(13,0);
+  lcd.print("T"); // Text mode
+
+  while (true) {
+    char k = kpd.getKey();
+    if (!k) continue;
+
+    unsigned long now = millis();
+
+    // 🔢 Toggle NUMBER MODE
+    if (k == 'C') {
+      isNumberMode = !isNumberMode;
+
+      lcd.setCursor(13,0);
+      lcd.print(isNumberMode ? "N" : "T");
+
+      beep(2000, 100);
+      continue;
+    }
+
+    // 🔤 Toggle UPPERCASE
+    if (k == 'D') {
+      isUpper = !isUpper;
+
+      lcd.setCursor(14,0);
+      lcd.print(isUpper ? "A" : "a");
+
+      beep(1800, 100);
+      continue;
+    }
+
+    // 🔢 NUMBER MODE (direct input)
+    if (isNumberMode && isdigit(k)) {
+      input += k;
+      lastKey = 0;
+
       lcd.setCursor(0,1);
       lcd.print("                ");
       lcd.setCursor(0,1);
-      beep(500, 100);
-    } else if(k != 'A' && k != 'D') {
-      // normal character
-      if(input.length() < 15) {
-        input += k;
-        lcd.setCursor(0,1);
-        if(hide) {
-          lcd.print("                ");
-          lcd.setCursor(0,1);
-          for(int i=0; i<input.length(); i++) lcd.print("*");
-        } else {
-          lcd.print("                ");
-          lcd.setCursor(0,1);
-          lcd.print(input);
-        }
-        beep(1200, 50);
-      }
+      lcd.print(input);
+
+      beep(1500, 80);
+      continue;
     }
+
+    String chars = "";
+
+    // 🔤 TEXT MODE mappings
+    if (k == '2') chars = "abc";
+    else if (k == '3') chars = "def";
+    else if (k == '4') chars = "ghi";
+    else if (k == '5') chars = "jkl";
+    else if (k == '6') chars = "mno";
+    else if (k == '7') chars = "pqrs";
+    else if (k == '8') chars = "tuv";
+    else if (k == '9') chars = "wxyz";
+    else if (k == '0') chars = " ";
+    else if (k == '1') chars = "1@._";
+    else if (k == 'A') chars = "#$%";
+    else if (k == 'B') chars = "!?";
+
+    // ⬅️ Backspace
+    else if (k == '*') {
+      if (input.length() > 0) input.remove(input.length() - 1);
+      lastKey = 0;
+      continue;
+    }
+
+    // ✅ Confirm
+    else if (k == '#') {
+      if (input.length() > 0) return input;
+    }
+
+    else continue;
+
+    // 🔁 Multi-tap logic
+    if (k == lastKey && (now - lastPressTime) < 800) {
+      tapIndex = (tapIndex + 1) % chars.length();
+      input.remove(input.length() - 1);
+    } else {
+      tapIndex = 0;
+    }
+
+    char c = chars[tapIndex];
+
+    // 🔠 Apply uppercase
+    if (isUpper && isalpha(c)) {
+      c = toupper(c);
+    }
+
+    input += c;
+
+    lastKey = k;
+    lastPressTime = now;
+
+    // 📺 Display
+    lcd.setCursor(0,1);
+    lcd.print("                ");
+    lcd.setCursor(0,1);
+
+    if (hide) {
+      for (int i = 0; i < input.length(); i++) lcd.print("*");
+    } else {
+      lcd.print(input);
+    }
+
+    beep(1000, 40);
   }
 }
-
-// ── PIN Authentication ──
+// ── Auth ──
 bool auth() {
   String entered = getInput("Enter PIN:", true);
   if(entered == "") return false;
 
-  // compare with stored PIN
   String stored = xr(ADDR_PIN, pinLen);
+
   if(entered == stored) {
     sc("Access Granted!", "");
     beep(2000, 400);
     delay(1500);
     return true;
   }
-  sc("Wrong PIN!", "Access Denied!");
+
+  sc("Wrong PIN!", "Denied!");
   beep(200, 800);
   delay(2000);
   return false;
@@ -130,54 +209,29 @@ bool auth() {
 
 // ── First Boot ──
 void firstBoot() {
-  sc("Welcome! Vault", "First Time Setup");
+  sc("Welcome!", "Setup");
   delay(2000);
 
-  // Set username
   while(true) {
-    String n = getInput("Set Username:", false);
+    String n = getInput("Username:", false);
     if(n.length() > 0) {
       EEPROM.write(ADDR_ULEN, n.length());
       xs(n.c_str(), n.length(), ADDR_UNAME);
       strncpy(uname, n.c_str(), 15);
-      lcd.clear();
-      lcd.print("Hi " + n + "!");
-      lcd.setCursor(0,1);
-      lcd.print("Username saved!");
-      beep(1000, 200);
-      delay(1500);
       break;
     }
-    sc("Cannot be empty!", "Try again");
-    delay(1500);
   }
 
-  // Set PIN
-  sc("Set your PIN:", "4-8 digits + #");
-  delay(1500);
   while(true) {
     String p = getInput("New PIN:", true);
     if(p.length() >= 4) {
-      // confirm PIN
       String p2 = getInput("Confirm PIN:", true);
       if(p == p2) {
         pinLen = p.length();
         EEPROM.write(ADDR_PINLEN, pinLen);
         xs(p.c_str(), pinLen, ADDR_PIN);
-        strncpy(storedPIN, p.c_str(), 8);
-        sc("PIN Set!", "Vault Ready!");
-        beep(2000, 500);
-        delay(2000);
         break;
-      } else {
-        sc("PINs don't match", "Try again!");
-        beep(300, 400);
-        delay(1500);
       }
-    } else {
-      sc("Min 4 digits!", "Try again");
-      beep(300, 300);
-      delay(1500);
     }
   }
 
@@ -185,9 +239,10 @@ void firstBoot() {
   EEPROM.commit();
 }
 
-// ── Load from EEPROM ──
+// ── Load ──
 void loadAll() {
   int ul = EEPROM.read(ADDR_ULEN);
+
   if(ul > 0 && ul <= 15 && ul != 255) {
     String u = xr(ADDR_UNAME, ul);
     strncpy(uname, u.c_str(), 15);
@@ -197,32 +252,13 @@ void loadAll() {
   if(pinLen > 8 || pinLen == 255) pinLen = 0;
 }
 
-// ── View Flow ──
+// ── View ──
 void viewFlow() {
   if(!auth()) return;
 
-  // show slot status
-  bool any = false;
-  String filledSlots = "";
-  for(int i=0; i<MAX_SLOTS; i++) {
-    if(sf(i)) { filledSlots += String(i) + " "; any = true; }
-  }
-
-  if(!any) {
-    sc("No passwords", "stored yet!");
-    beep(300, 300);
-    delay(2000);
-    return;
-  }
-
-  lcd.clear();
-  lcd.setCursor(0,0); lcd.print("Filled slots:");
-  lcd.setCursor(0,1); lcd.print(filledSlots);
-  delay(2000);
-
-  // ask which slot
-  String s = getInput("Slot number:", false);
+  String s = getInput("Slot:", false);
   if(s == "") return;
+
   int slot = s.toInt();
 
   if(slot >= 0 && slot < MAX_SLOTS && sf(slot)) {
@@ -231,115 +267,71 @@ void viewFlow() {
     String d = xr(a+1, l);
 
     lcd.clear();
-    lcd.setCursor(0,0); lcd.print("Slot " + String(slot) + ":");
-    lcd.setCursor(0,1); lcd.print(d);
-    beep(2000, 200);
+    lcd.print("Slot " + String(slot));
+    lcd.setCursor(0,1);
+    lcd.print(d);
     delay(5000);
-    sc("Vault: LOCKED", "");
-    delay(1000);
   } else {
-    sc("Empty/Invalid", "slot!");
-    beep(300, 300);
+    sc("Invalid slot!", "");
     delay(2000);
   }
 }
 
-// ── Insert Flow ──
+// ── Insert ──
 void insertFlow() {
-  int free = 0, first = -1;
-  for(int i=0; i<MAX_SLOTS; i++)
-    if(!sf(i)) { free++; if(first<0) first=i; }
-
-  if(free == 0) {
-    sc("No Slots Left!", "Delete one first");
-    beep(300, 500);
-    delay(3000);
-    return;
-  }
-
-  lcd.clear();
-  lcd.setCursor(0,0); lcd.print("Free: " + String(free) + "/10");
-  lcd.setCursor(0,1); lcd.print("Next free: " + String(first));
-  delay(2000);
-
-  // ask slot number
-  String s = getInput("Save to slot:", false);
+  String s = getInput("Slot:", false);
   if(s == "") return;
+
   int slot = s.toInt();
 
   if(slot < 0 || slot >= MAX_SLOTS || sf(slot)) {
-    sc("Invalid/Filled!", "Use free slot");
-    beep(300, 300);
+    sc("Invalid slot!", "");
     delay(2000);
     return;
   }
 
-  // get password
-  String pass = getInput("Enter Password:", false);
+  String pass = getInput("Password:", false);
   if(pass == "") return;
 
-  // save
   int a = sa(slot);
+
   EEPROM.write(a, pass.length());
   xs(pass.c_str(), pass.length(), a+1);
   EEPROM.commit();
 
-  lcd.clear();
-  lcd.print("Slot " + String(slot));
-  lcd.setCursor(0,1);
-  lcd.print("Secured! " + String(free-1) + " left");
-  beep(1500, 300);
+  sc("Saved!", "");
   delay(2000);
 }
 
-// ── Delete Flow ──
+// ── Delete ──
 void deleteFlow() {
   if(!auth()) return;
 
-  bool any = false;
-  String filledSlots = "";
-  for(int i=0; i<MAX_SLOTS; i++)
-    if(sf(i)) { filledSlots += String(i) + " "; any = true; }
-
-  if(!any) {
-    sc("Nothing to", "delete!");
-    delay(2000);
-    return;
-  }
-
-  lcd.clear();
-  lcd.setCursor(0,0); lcd.print("Filled slots:");
-  lcd.setCursor(0,1); lcd.print(filledSlots);
-  delay(2000);
-
-  String s = getInput("Delete slot:", false);
+  String s = getInput("Delete:", false);
   if(s == "") return;
+
   int slot = s.toInt();
 
   if(slot >= 0 && slot < MAX_SLOTS && sf(slot)) {
     int a = sa(slot);
-    for(int i=0; i<SLOT_SIZE; i++) EEPROM.write(a+i, 0);
+    for(int i=0;i<SLOT_SIZE;i++) EEPROM.write(a+i, 0);
     EEPROM.commit();
-    lcd.clear();
-    lcd.print("Slot " + String(slot));
-    lcd.setCursor(0,1);
-    lcd.print("Deleted!");
-    beep(400, 400);
+    sc("Deleted!", "");
     delay(2000);
   } else {
-    sc("Invalid/Empty", "slot!");
-    beep(300, 300);
+    sc("Invalid!", "");
     delay(2000);
   }
 }
 
-// ─────────────────────────────────────────
+// ── Setup ──
 void setup() {
-  Serial.begin(115200);
-  Wire.begin(21, 22);
+  Wire.begin(21,22);
   lcd.init();
   lcd.backlight();
   EEPROM.begin(512);
+
+  pinMode(BUZZER, OUTPUT);
 
   if(EEPROM.read(ADDR_BOOT) != 1) firstBoot();
   else loadAll();
@@ -348,17 +340,18 @@ void setup() {
   lcd.print("Hello ");
   lcd.print(uname);
   lcd.setCursor(0,1);
-  lcd.print("Vault Ready!");
-  beep(1500, 300);
+  lcd.print("Vault Ready");
   delay(2000);
 }
 
+// ── Loop ──
 void loop() {
-  sc("1.View 2.Insert", "3.Delete");
+  sc("1.View 2.Save", "3.Delete");
 
   while(true) {
     char k = kpd.getKey();
-    if(k == '1') { viewFlow();   return; }
+
+    if(k == '1') { viewFlow(); return; }
     if(k == '2') { insertFlow(); return; }
     if(k == '3') { deleteFlow(); return; }
   }
