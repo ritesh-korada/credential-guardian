@@ -81,15 +81,174 @@ Press 1 (View) → Enter PIN via keypad
 
 ## 🎮 Keypad Controls
 
-| Key | Function |
-|---|---|
-| 0-9 | Type input |
-| # | Confirm / Enter |
-| * | Cancel / Back |
-| B | Backspace |
-| C | Clear all |
-| 1/2/3 | Menu selection |
+# 🔐 Credential Guardian – Keypad Usage Guide
 
+## 📱 Input System Overview
+
+The device uses a **4×4 matrix keypad with multi-tap input**, similar to old mobile phones.
+It supports:
+
+* Alphabet input (lowercase & uppercase)
+* Numeric input
+* Special characters
+* Secure PIN entry
+
+---
+
+## 🎮 Keypad Layout
+
+```
+1  2  3  A
+4  5  6  B
+7  8  9  C
+*  0  #  D
+```
+
+---
+
+## 🔤 Input Modes
+
+### 1. Text Mode (Default)
+
+* Used for entering usernames and passwords
+* Keys 2–9 generate alphabets using multi-tap
+
+| Key | Characters |
+| --- | ---------- |
+| 2   | a b c      |
+| 3   | d e f      |
+| 4   | g h i      |
+| 5   | j k l      |
+| 6   | m n o      |
+| 7   | p q r s    |
+| 8   | t u v      |
+| 9   | w x y z    |
+| 0   | space      |
+
+👉 Press the same key repeatedly to cycle letters.
+
+---
+
+### 2. Uppercase Mode
+
+* Press **D** to toggle uppercase
+
+| Display | Meaning   |
+| ------- | --------- |
+| a       | lowercase |
+| A       | uppercase |
+
+Example:
+
+* Press `D` → uppercase ON
+* `2` → A
+* `22` → B
+
+---
+
+### 3. Number Mode
+
+* Press **C** to toggle number mode
+
+| Display | Meaning     |
+| ------- | ----------- |
+| T       | text mode   |
+| N       | number mode |
+
+In number mode:
+
+* Keys 0–9 directly input digits
+
+Example:
+
+```
+Press C → N
+2 → 2
+3 → 3
+```
+
+---
+
+### 4. Special Characters
+
+| Key | Characters    |
+| --- | ------------- |
+| 1   | 1 → @ → . → _ |
+| A   | # → $ → %     |
+| B   | ! → ?         |
+
+👉 Press repeatedly to cycle symbols.
+
+---
+
+## 🔑 Control Keys
+
+| Key | Function           |
+| --- | ------------------ |
+| #   | Confirm / Enter    |
+| *   | Backspace          |
+| C   | Toggle number mode |
+| D   | Toggle uppercase   |
+| A/B | Special characters |
+
+---
+
+## ✍️ Example Usage
+
+### Example 1: Enter "ritesh"
+
+```
+777 → r
+444 → i
+8   → t
+33  → e
+7777 → s
+44  → h
+Press # to confirm
+```
+
+---
+
+### Example 2: Enter "Ritesh@65"
+
+```
+Press D → uppercase
+777 → R
+
+Press D → lowercase
+444 → i
+8 → t
+33 → e
+7777 → s
+44 → h
+
+Press 1 → @
+
+Press C → number mode
+6 → 6
+5 → 5
+
+Press # to confirm
+```
+
+---
+
+## ⚠️ Important Notes
+
+* Press keys quickly to cycle characters
+* Wait ~1 second to confirm a character before typing next
+* Use `*` to correct mistakes
+* Use `#` only after completing input
+
+---
+
+## 🎯 Summary
+
+The keypad system provides:
+
+* Secure offline input
+* Full text + numeric + symbol support
+* Efficient operation using minimal hardware
 ---
 
 ## 🔒 Why safer than browser passwords?
@@ -122,7 +281,7 @@ Press 1 (View) → Enter PIN via keypad
 
 ## 🖥️ Simulation
 
-▶️ [Run on Wokwi] https://wokwi.com/projects/458398359029079041
+▶️ [Run on Wokwi] https://wokwi.com/projects/459670045014649857
 
 ---
 
